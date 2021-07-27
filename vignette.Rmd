@@ -1,10 +1,10 @@
 ---
 title: "Bulk RNA-Seq Transcriptomics project"
 output: html_notebook
-author: Emanuele Cavalleri 985888 (ex 908838, I used that one)
+author: Emanuele Cavalleri
 ---
 
-This is the R vignette of the Bulk RNA-Seq Transcriptomics project. In this vignette we will start from a Recount table, whose counts derive from RNA-seq samples of human brain cells compared to pancreas and liver cells (see http://159.149.160.56/GT_files/July30/ and also https://gtexportal.org/home/).
+This is the R vignette of a Bulk RNA-Seq Transcriptomics project. In this vignette we will start from a Recount table, whose counts derive from RNA-seq samples of human brain cells compared to pancreas and liver cells (see http://159.149.160.56/GT_files/July30/ and also https://gtexportal.org/home/).
 
 # Pre-processing steps
 
