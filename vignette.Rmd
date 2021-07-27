@@ -1,0 +1,641 @@
+---
+title: "Bulk RNA-Seq Transcriptomics project"
+output: html_notebook
+author: Emanuele Cavalleri 985888 (ex 908838, I used that one)
+---
+
+This is the R vignette of the Bulk RNA-Seq Transcriptomics project. In this vignette we will start from a Recount table, whose counts derive from RNA-seq samples of human brain cells compared to pancreas and liver cells (see http://159.149.160.56/GT_files/July30/ and also https://gtexportal.org/home/).
+
+# Pre-processing steps
+
+Datasets are in the “Ranged Summarized Experiment” format of Recount2.
+```{r, results='hide'}
+library("recount", quietly = TRUE)
+```
+
+Let’s start from the first tissue mentioned: brain. We can load each dataset with the load() command.
+```{r}
+data <- load("rse_gene_brain_9_scaled.Rdata")
+data
+```
+
+The object containing the data is called "rse" and its type is "RangedSummarizedExperiment".
+```{r}
+rse
+```
+
+Counts have already been normalized/scaled (to 40M reads per column), therefore they do not need:
+```{r}
+#rse <- scale_counts(rse)
+```
+
+All row data are identical, they represent the Gencode V25 comprehensive annotation.
+
+We can explore the information associated with the samples with colData, and with rows with rowData.
+```{r}
+head(colData(rse), 2)
+```
+
+```{r}
+rowData(rse)
+```
+
+But also the genomic coordinates of genes.
+```{r}
+rowRanges(rse)
+```
+
+Select the three columns we have to work on: 8 -> 8 9 10. What are their names?
+```{r}
+rownames(colData(rse)[colnames(rse)[8:10],])
+```
+
+Total number of reads per column:
+```{r}
+c(sum(assays(rse)$counts[,8]), sum(assays(rse)$counts[,9]), sum(assays(rse)$counts[,10]))
+```
+
+Remove all genes with length < 200, or, in other words, keep all genes with length >= 200...
+```{r}
+rse <- rse[, 8:10] 		
+rse <- rse[rowData(rse)$bp_length >= 200,] 
+```
+
+and produce the overall read count associated with these genes in each tissue/replicate. Let us extract the count matrix from the rse object.
+```{r}
+longerThan200 <- assays(rse)$counts
+head(longerThan200)
+```
+
+Total number of reads tissue per column after removal:
+```{r}
+c(sum(longerThan200[,1]), sum(longerThan200[,2]), sum(longerThan200[,3]))
+```
+
+Before removing all mitochondrial genes we have to check if these ones begin with MT.
+```{r}
+unlist(rowData(rse)$symbol, use.names = FALSE)[grep("^MT-*", unlist(rowData(rse)$symbol, use.names = FALSE))] 
+```
+
+Then we can keep !(mitochondrial genes)...
+```{r}
+mt <- rowData(rse)$gene_id[grep("^MT-*", unlist(rowData(rse)$symbol, use.names = FALSE))]
+```
+
+and produce the overall read count associated with these genes in each tissue/replicate.
+```{r}
+filtered1 <- assays(rse)$counts
+filtered1 <- filtered1[which(!(rownames(filtered1) %in% mt)),]
+head(filtered1)
+```
+
+Total number of reads tissue per column after removal:
+```{r}
+c(sum(filtered1[,1]), sum(filtered1[,2]), sum(filtered1[,3]))
+```
+
+GEO information was absent for the SRP012682 dataset.
+```{r}
+colData(rse)[, c("geo_accession", "title", "characteristics")]
+```
+
+We can expand the biological metadata information by adding predictions based on RNA-seq data. The predictions include information about sex, sample source (cell line vs tissue), tissue and the sequencing strategy used.
+```{r}
+rse <- add_predictions(rse)
+```
+
+```{r}
+colData(rse)[, 83:ncol(colData(rse))]
+```
+
+Project SRP012682 has a few extra biologically relevant variables via the SRA Run selector https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP012682.
+```{r}
+sra <- read.csv("SraRunTable.txt", header = TRUE)
+
+# Explore it
+head(sra)
+```
+```{r}
+# Set all column names in lower case
+colnames(sra) <- tolower(colnames(sra))
+
+# Choose some meaningful variables we want to add
+sra_vars <- c(
+    "sex", "body_site", "histological_type", "is_tumor", "submitted_subject_id"
+)
+stopifnot(all(sra_vars %in% colnames(sra)))
+
+# Re-organize the SRA table based on the SRA Run IDs we have
+sra1 <- sra[match(colData(rse)$run, sra$run), ]
+
+# Double check the order
+stopifnot(identical(colData(rse)$run, as.character(sra1$run)))
+
+# Append the variables of interest
+colData(rse) <- cbind(colData(rse), sra1[, sra_vars])
+
+colData(rse)[, 95:ncol(colData(rse))]
+```
+
+Same steps for the other two tissues.
+```{r}
+data <- load("rse_gene_pancreas_0_scaled.Rdata")
+rownames(colData(rse)[colnames(rse)[3:5],])
+c(sum(assays(rse)$counts[,3]), sum(assays(rse)$counts[,4]), sum(assays(rse)$counts[,5]))
+rse <- rse[, 3:5]	# 3 -> 3 4 5.
+rse <- rse[rowData(rse)$bp_length >= 200,] 
+longerThan200 <- assays(rse)$counts
+head(longerThan200)
+c(sum(longerThan200[,1]), sum(longerThan200[,2]), sum(longerThan200[,3]))
+#Check if mitochondrial genes begin with MT.
+unlist(rowData(rse)$symbol, use.names = FALSE)[grep("^MT-*", unlist(rowData(rse)$symbol, use.names = FALSE))] 
+mt <- rowData(rse)$gene_id[grep("^MT-*", unlist(rowData(rse)$symbol, use.names = FALSE))]
+filtered2 <- assays(rse)$counts
+filtered2 <- filtered2[which(!(rownames(filtered2) %in% mt)),]
+head(filtered2)
+c(sum(filtered2[,1]), sum(filtered2[,2]), sum(filtered2[,3]))
+```
+
+Columns contain a lot of information, that permit to look up each sample in the GTEx database for further details, e.g. age/sex of the donor, a picture of the tissue sample itself, and so on (https://gtexportal.org/home/histologyPage). Unfortunately we could not appreciate those information before because "sampid"s of our three brain replicates are not present in the GTEx database.
+```{r}
+colData(rse)$sampid
+```
+
+All samples were collected from males between 50 and 69 yo all died from "ventilator case" (Hardy scale) and only the first had a fibrosis.
+```{r}
+colData(rse)$smpthnts
+```
+
+```{r}
+rse <- add_predictions(rse)
+colData(rse)[, 83:ncol(colData(rse))]
+```
+
+```{r}
+sra2 <- sra[match(colData(rse)$run, sra$run), ]
+
+# Double check the order
+stopifnot(identical(colData(rse)$run, as.character(sra2$run)))
+
+# Append the variables of interest
+colData(rse) <- cbind(colData(rse), sra2[, sra_vars])
+
+colData(rse)[, 95:ncol(colData(rse))]
+```
+
+```{r}
+data <- load("rse_gene_liver_8_scaled.Rdata")
+rownames(colData(rse)[colnames(rse)[8:10],])
+c(sum(assays(rse)$counts[,8]), sum(assays(rse)$counts[,9]), sum(assays(rse)$counts[,10]))
+rse <- rse[, 8:10]	# 8 -> 8 9 10.
+rse <- rse[rowData(rse)$bp_length >= 200,] 
+longerThan200 <- assays(rse)$counts
+head(longerThan200)
+c(sum(longerThan200[,1]), sum(longerThan200[,2]), sum(longerThan200[,3]))
+#Check if mitochondrial genes begin with MT.
+unlist(rowData(rse)$symbol, use.names = FALSE)[grep("^MT-*", unlist(rowData(rse)$symbol, use.names = FALSE))] 
+mt <- rowData(rse)$gene_id[grep("^MT-*", unlist(rowData(rse)$symbol, use.names = FALSE))]
+filtered3 <- assays(rse)$counts
+filtered3 <- filtered3[which(!(rownames(filtered3) %in% mt)),]
+head(filtered3)
+c(sum(filtered3[,1]), sum(filtered3[,2]), sum(filtered3[,3]))
+```
+
+```{r}
+colData(rse)$sampid
+```
+The first replicate was collected from a man (40-49 yo) and it's associated with "necrosis", man died from ventilator case. Second one comes from a woman (60-69 yo) died from natural causes and the tissue shows congestion and steatosis. Last one comes from a woman died from ventilator case (40-49 yo) and the tissue shows no pathology.
+
+```{r}
+colData(rse)$smpthnts
+```
+
+```{r}
+rse <- add_predictions(rse)
+colData(rse)[, 83:ncol(colData(rse))]
+```
+
+```{r}
+# Re-organize the SRA table based on the SRA Run IDs we have
+sra3 <- sra[match(colData(rse)$run, sra$run), ]
+
+# Double check the order
+stopifnot(identical(colData(rse)$run, as.character(sra3$run)))
+
+# Append the variables of interest
+colData(rse) <- cbind(colData(rse), sra3[, sra_vars])
+
+colData(rse)[, 95:ncol(colData(rse))]
+```
+
+Merge them into a single count table/object, for subsequent analyses.
+```{r}
+countTable <- merge(filtered1, filtered2, by = "row.names", all = TRUE)
+rownames(countTable) <- countTable$Row.names
+countTable$Row.names <- NULL
+countTable <- data.matrix(countTable, rownames.force = NA)
+countTable <- merge(countTable, filtered3, by = "row.names", all = TRUE)
+rownames(countTable) <- countTable$Row.names
+countTable$Row.names <- NULL
+countTable <- data.matrix(countTable, rownames.force = NA)
+head(countTable)
+```
+
+Let's prepare a table summarizing what we’ve done, one row per tissue/sample. 
+```{r}
+a <- c("Brain / SRR1337909", "Brain / SRR1397094", "Brain / SRR817686", "Pancreas / SRR1374739", "Pancreas / SRR1097883", "Pancreas / SRR2167209", "Liver / SRR1349479", "Liver / SRR1431248", "Liver / SRR1405054")
+b <- c(38280901, 36625433, 37946538, 37947698, 37248113, 36301737, 40990128, 37822190, 37364870)
+c <- c(106875, 69732, 58186, 61393, 64055, 80788, 57072, 70726, 46546)
+d <- c(0.279186218, 0.190392288, 0.153336781, 0.161783199, 0.171968443, 0.222545824, 0.139233524, 0.186996046, 0.124571556)
+e <- c(59079, 72393, 90698, 53240, 51741, 46357, 84010, 94812, 113693)
+f <- c(0.154330223, 0.197657731, 0.239015216, 0.140298365, 0.13890905, 0.127699123, 0.204951787, 0.250678239, 0.304277788)
+g <- c(sum(countTable[,1]), sum(countTable[,2]), sum(countTable[,3]), sum(countTable[,4]), sum(countTable[,5]), sum(countTable[,6]), sum(countTable[,7]), sum(countTable[,8]), sum(countTable[,9]))
+tissuePerColumn <- data.frame(TissueColumn = a, TotalNumberOfReads = b, TotalNumberOfReadsOnShortRNAs = c, PercentageOfReadsOnShortRNAs = d, TotalNumberOfReadsOnMTGenes = e, PercentageOfReadsOnMTgenes = f, TotalNumberOfFilteredReads = g)
+rownames(tissuePerColumn) <- tissuePerColumn$TissueColumn
+tissuePerColumn$TissueColumn <- NULL
+tissuePerColumn
+```
+
+# DE genes using edgeR
+
+The tool for calling DE genes we choose is edgeR.
+
+```{r}
+library("edgeR")
+```
+
+We'll process all tissues together, with a suitable design matrix. The row names of the table are the "annoying" ENSG IDs with the number at the end, so we clean them.
+```{r}
+ensembl <- gsub("\\..*", "", rownames(countTable))
+rownames(countTable) <- ensembl
+head(countTable)
+```
+
+We know that the first three columns are brain cells, the subsequent three are pancreas cells, while the remaining three are liver cells. We give to edgeR the corresponding info.
+```{r}
+group <- as.factor(rep(c("Brain","Pancreas","Liver"), c(3,3,3)))	
+```
+
+For edgeR the "DE gene" object containing all the info about the dataset as well as the parameters estimated during the different steps of the analysis is a "DGEList"; we add the counts to it. 
+```{r}
+#countTable[is.na(countTable)] = 0
+y <- DGEList(counts=countTable)
+y$samples$group <- group
+y
+```
+
+```{r}
+ensembl <- gsub(".*R","",rownames(y$samples))
+barplot(y$samples$lib.size*1e-6, names=ensembl, ylab="Library size (millions)", las=2, col=rep(2:4, each=3))
+legend("top", legend = c("Brain", "Pancreas", "Liver"), fill=rep(2:4, each=1), bty = "n", inset = c(-0.05,-0.1), xpd=TRUE, horiz=T)
+```
+
+Notice that "norm.factors" is still set to one. First, it is advisable to remove altogether all genes with low or zero counts.
+```{r}
+table(rowSums(y$counts==0)==9)
+keep.exprs <- filterByExpr(y, group=group)
+y <- y[keep.exprs,, keep.lib.sizes=FALSE]
+```
+
+Function keep.exprs permits also to change the parameters of filtering. Let us extract and store in a vector the log of the counts per million before normalization with the "cpm" function.
+```{r}
+logcpm_before <- cpm(y, log=TRUE)
+```
+
+We can now normalize the counts. TMM (trimmed mean of M-values) is recommended for most RNA-Seq data where the majority (more than half) of the genes are believed not differentially expressed between any pair of the samples.
+```{r}
+y <- calcNormFactors(y, method = "TMM")
+y
+```
+
+Notice now "norm.factors" has changed, and despite quite relevant differences in library sizes, they remain quite moderate. Distribution of (normalized) log-cpm values across samples:
+```{r}
+logcpm <- cpm(y, log=TRUE)
+boxplot(logcpm, las=2, names = ensembl, col=rep(2:4, each=3), notch = TRUE)
+legend("top", legend = c("Brain", "Pancreas", "Liver"), fill=rep(2:4, each=1), bty = "n", inset = c(-0.05,-0.1), xpd=TRUE, horiz=T)
+```
+
+Boxplots of the log2(normalized_counts) of each sample, one boxplot per sample without outliers. 
+```{r}
+boxplot(logcpm, las=2, names = ensembl, col=rep(2:4, each=3), outline=FALSE , notch = TRUE)
+legend("top", legend = c("Brain", "Pancreas", "Liver"), fill=rep(2:4, each=1), bty = "n", inset = c(-0.05,-0.1), xpd=TRUE, horiz=T)
+```
+
+And before normalization:
+```{r}
+boxplot(logcpm_before, las=2, names = ensembl, col=rep(2:4, each=3), notch = TRUE)
+legend("top", legend = c("Brain", "Pancreas", "Liver"), fill=rep(2:4, each=1), bty = "n", inset = c(-0.05,-0.1), xpd=TRUE, horiz=T)
+```
+
+The change is small, but it can be noticed by eye. Now we design the linear model; we don’t have to define an "intercept" term for our model. The intercept is on the origin since there is no "base condition" (e.g. cancer cells vs "normal" cells) from which the others can be related by a change.
+```{r}
+design <- model.matrix(~0+group, data=y$samples)
+colnames(design) <- levels(y$samples$group)
+design
+```
+
+At this point, counts have been normalized and the design defined.
+
+Exploratory analysis: we plot the samples labeled by group and then by replicate.
+```{r}
+plotMDS(logcpm, labels=group, col=rep(2:4, each=3))
+plotMDS(y, col=rep(2:4, each=3))	
+```
+
+MDS is a dimensionality reduction, in which instead of expression the fold ratio values among the three samples are employed. We now estimate the NB dispersion, and plot the BCV.
+```{r}
+library(statmod)
+y <- estimateDisp(y, design, robust=TRUE)
+plotBCV(y, main="BCV Plot")
+```
+
+All the parameters have been stored in the y object, among which the "common" and gene-specific dispersion estimates.
+```{r}
+y$common.dispersion
+```
+
+Now we fit the data to the "generalized linear" model.
+```{r}
+fit <- glmQLFit(y, design, robust=TRUE)
+plotQLDisp(fit)
+```
+
+For testing for DE genes, we have to specify the contrast. The following is condition 1 (brain) vs condition 2 (pancreas). topTags returns the genes with the highest variation.
+```{r}
+qlf.1vs2 <- glmQLFTest(fit, contrast=c(1,0,-1)) # keep in mind grouping (see design matrix) follows alphabetical order, therefore 1 -> Brain 0 -> Liver -1 -> Pancreas
+topTags(qlf.1vs2)
+```
+
+Plot log-fold change against log-counts per million, with DE genes highlighted:
+```{r}
+plotMD(qlf.1vs2)
+abline(h=c(1, 0, -1), col="blue")
+```
+
+The complete results of the test are in qlf.1vs2$table. Let us select the ones with p-value (FDR) < 0.05.
+```{r}
+FDR <- p.adjust(qlf.1vs2$table$PValue, method="BH")
+sum(FDR < 0.05)
+```
+
+Or:
+```{r}
+summary(decideTests(qlf.1vs2))
+```
+
+decideTests has a default FDR (BH adjusted p-value) threshold of 0.05, and no check on the log-fold ratio. We can make the selection more stringent, by setting stricter thresholds for both and setting lfc (log-fold-change) = 1/-1.
+```{r}
+summary(decideTests(qlf.1vs2, p.value=0.01, lfc=1))
+```
+We retain p-value = 0.01 is a better and more significant value since most of the tools have a threshold around 2,000 for the maximum number of genes that can be submitted for any analysis of this kind. 
+
+Here we save the list of genes with adjusted p-value (FDR) lower than 0.01.
+```{r}
+deg.1vs2 <- topTags(qlf.1vs2, n=Inf, adjust.method = "BH", sort.by = "PValue", p.value = 0.01)$table
+head(deg.1vs2)
+```
+
+We can perform the comparision of condition 1 vs. 3 in a similar way.
+```{r}
+qlf.1vs3 <- glmQLFTest(fit, contrast=c(1,-1,0))
+deg.1vs3 <- topTags(qlf.1vs3, n=Inf, adjust.method = "BH", sort.by = "PValue", p.value = 0.01)$table
+head(deg.1vs3)
+```
+
+But also contrast condition 2 vs. 3.
+```{r}
+qlf.2vs3 <- glmQLFTest(fit, contrast=c(0,-1,1))
+deg.2vs3 <- topTags(qlf.2vs3, n=Inf, adjust.method = "BH", sort.by = "PValue", p.value = 0.01)$table
+head(deg.2vs3)
+```
+
+Now we have all our results, contained here.
+```{r}
+head(qlf.1vs2$table)
+head(qlf.1vs3$table)
+head(qlf.2vs3$table)
+```
+
+Now we want to replace the ENSG IDs with the gene name/symbol, but instead of replacing the names in the table it is better to add an additional column to it. The org.Hs.eg.db is a R package containing the gene annotation for human (same for mouse if you replace Hs with Mm, and so on) in which for each gene in each annotation there is its correspondence to another annotation. We can employ it to "translate" gene IDs or names from one annotation to the other. We also add an "entrezid" column, useful for subsequent analysis since GO and KEGG (the tools we'll use) work on that one.
+```{r}
+library("org.Hs.eg.db")
+qlf.1vs2$table$symbol <- mapIds(org.Hs.eg.db,keys=rownames(qlf.1vs2$table), keytype="ENSEMBL", column="SYMBOL", multiVals="first")			
+qlf.1vs2$table$entrezid <- mapIds(org.Hs.eg.db, keys=rownames(qlf.1vs2$table), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+qlf.1vs3$table$symbol <- mapIds(org.Hs.eg.db,keys=rownames(qlf.1vs3$table), keytype="ENSEMBL", column="SYMBOL", multiVals="first")
+qlf.1vs3$table$entrezid <- mapIds(org.Hs.eg.db, keys=rownames(qlf.1vs3$table), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+qlf.2vs3$table$symbol <- mapIds(org.Hs.eg.db,keys=rownames(qlf.2vs3$table), keytype="ENSEMBL", column="SYMBOL", multiVals="first")
+qlf.2vs3$table$entrezid <- mapIds(org.Hs.eg.db, keys=rownames(qlf.2vs3$table), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+head(qlf.1vs2$table)
+head(qlf.1vs3$table)
+head(qlf.2vs3$table)
+```
+
+Now we can select what we consider to be the "DE" genes from the table. We select them by corrected p-value first, then by FC (positive/negative).
+```{r}
+deg.1vs2 <- topTags(qlf.1vs2, n=Inf, adjust.method = "BH", sort.by = "PValue", p.value = 0.01)$table
+deg.1vs3 <- topTags(qlf.1vs3, n=Inf, adjust.method = "BH", sort.by = "PValue", p.value = 0.01)$table
+deg.2vs3 <- topTags(qlf.2vs3, n=Inf, adjust.method = "BH", sort.by = "PValue", p.value = 0.01)$table
+head(deg.1vs2)
+head(deg.1vs3)
+head(deg.2vs3)
+```
+And then retrieve the lists of "up" and "down" regulated ones.
+```{r}
+up.genes.1vs2 <- deg.1vs2[deg.1vs2$logFC > 0,]
+up.genes.1vs3 <- deg.1vs3[deg.1vs3$logFC > 0,]
+up.genes.2vs3 <- deg.2vs3[deg.2vs3$logFC > 0,]
+head(up.genes.1vs2)
+head(up.genes.1vs3)
+head(up.genes.2vs3)
+```
+```{r}
+down.genes.1vs2 <- deg.1vs2[deg.1vs2$logFC < 0,]
+down.genes.1vs3 <- deg.1vs3[deg.1vs3$logFC < 0,]
+down.genes.2vs3 <- deg.2vs3[deg.2vs3$logFC < 0,]
+head(down.genes.1vs2)
+head(down.genes.1vs3)
+head(down.genes.2vs3)
+```
+
+Finally, we can save Excel sheets for further use.
+```{r}
+library("xlsx")
+write.xlsx(deg.1vs2, file="deg.1vs2.xlsx", sheetName = "a", col.names = TRUE, row.names = TRUE, append = FALSE)
+write.xlsx(deg.1vs3, file="deg.1vs3.xlsx", sheetName = "b", col.names = TRUE, row.names = TRUE, append = FALSE)
+write.xlsx(deg.2vs3, file="deg.2vs3.xlsx", sheetName = "c", col.names = TRUE, row.names = TRUE, append = FALSE)
+
+#up 1vs23
+l <- list(up.genes.1vs2, up.genes.1vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+library(dplyr)
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+# l is a list containing two dataframes with same rownames, symbols & entrezids, as expected. You can check it using l1 <- l[[1]]; l1 <- l1[ order(row.names(l1)), ]; l2 <- l[[2]]; l2 <- l2[ order(row.names(l2)), ]; l1 == l2
+# Therefore we can pick either l[[1]] or l[[2]]
+write.xlsx(l[[1]], file="up.1vs23.xlsx", sheetName = "d-1vs23", col.names = TRUE, row.names = TRUE, append = FALSE) 
+
+#up 2vs13
+l <- list(up.genes.1vs2, up.genes.2vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+write.xlsx(l[[1]], file="up.2vs13.xlsx", sheetName = "d-2vs13", col.names = TRUE, row.names = TRUE, append = FALSE) 
+
+#up 3vs12
+l <- list(up.genes.1vs3, up.genes.2vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+write.xlsx(l[[1]], file="up.3vs12.xlsx", sheetName = "d-3vs12", col.names = TRUE, row.names = TRUE, append = FALSE)
+
+#down 1vs23
+l <- list(down.genes.1vs2, down.genes.1vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+write.xlsx(l[[1]], file="down.1vs23.xlsx", sheetName = "e-1vs23", col.names = TRUE, row.names = TRUE, append = FALSE) 
+
+#down 2vs13
+l <- list(down.genes.1vs2, down.genes.2vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+write.xlsx(l[[1]], file="down.2vs13.xlsx", sheetName = "e-2vs13", col.names = TRUE, row.names = TRUE, append = FALSE) 
+
+#down 3vs12
+l <- list(down.genes.1vs3, down.genes.2vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+write.xlsx(l[[1]], file="down.3vs12.xlsx", sheetName = "e-3vs12", col.names = TRUE, row.names = TRUE, append = FALSE)
+```
+
+Gene up-regulated in Tissue 1 vs Tissue 2 with the lowest FDR and up-regulated also in Tissue 1 vs Tissue 3.
+```{r}
+l <- list(head(up.genes.1vs2), up.genes.1vs3)
+common_names = Reduce(intersect, lapply(l, row.names))
+l <- lapply(l, function(x) { x[row.names(x) %in% common_names,] })
+l <- lapply(l, function(x) x%>% select(symbol,entrezid))
+l[[1]][1,]
+```
+
+# GO & KEGG pathway analysis 
+
+The gene ontology (GO) and the KEGG pathway analysis are the common downstream procedures to interpret the differential expression results in a biological context. Given a set of genes that are up- or down-regulated under a certain contrast of interest, a GO (or pathway) analysis will find which GO terms (or pathways) are over- or under-represented using annotations for the genes in that set. Suppose we want to identify GO terms and KEGG pathways in group 1 (brain) compared to group 2 (pancreas) from the previous analysis.
+	
+Focusing on the ontology of Biological Process (BP) and metabolic pathways (given by KEGG) we can observe up-regulated genes that in the tumors (or more in general in diseases, since we have no cancerous cells condition) tend to be associated with cell differentiation, cell migration and tissue morphogenesis.
+```{r}
+go <- goana(list(Up=up.genes.1vs2$entrezid, Down=down.genes.1vs2$entrezid), species="Hs", FDR=0.01)
+topGO(go, ontology = "BP", number = 30L, truncate.term = NULL, sort="Up")
+keg <- kegga(list(Up=up.genes.1vs2$entrezid, Down=down.genes.1vs2$entrezid), species="Hs", FDR=0.01)
+topKEGG(keg, number = 30L, truncate.path = NULL, sort="Up")
+```
+
+```{r}
+library(clusterProfiler)
+ego <- enrichGO(up.genes.1vs2$entrezid, OrgDb="org.Hs.eg.db", ont="BP", readable=TRUE, pvalueCutoff=0.01)
+
+library(enrichplot)
+dotplot(ego, showCategory=30)
+
+kk <- enrichKEGG(up.genes.1vs2$entrezid, organism = "hsa", pvalueCutoff=0.01)
+dotplot(kk, showCategory=30)
+```
+These bunch of genes up-regulated showed above are all associated with the nervous system (probably they are over-expressed in older ages and also in cerebrovascular or neurological diseases, principal causes of death of these donors).
+
+Down-regulated 1vs2 genes are mostly associated with pancreatic functions. We can also appreciate the presence of "Maturity onset diabetes of the young" (KEGG) which refers to any of several hereditary forms of diabetes mellitus caused by mutations in an autosomal dominant gene disrupting insulin production in islets of Langerhans of pancreas.
+```{r}
+topGO(go, ontology = "BP", number = 30L, truncate.term = NULL, sort="Down")
+topKEGG(keg, number = 30L, truncate.path = NULL, sort="Down")
+```
+
+```{r}
+ego <- enrichGO(down.genes.1vs2$entrezid, OrgDb="org.Hs.eg.db", ont="BP", readable=TRUE, pvalueCutoff=0.01)
+dotplot(ego, showCategory=30)
+kk <- enrichKEGG(down.genes.1vs2$entrezid, organism = "hsa", pvalueCutoff=0.01)
+dotplot(kk, showCategory=30)
+```
+
+We can do the same for group 1 (brain) compared to group 3 (liver).
+```{r}
+go <- goana(list(Up=up.genes.1vs3$entrezid, Down=down.genes.1vs3$entrezid), species="Hs", FDR=0.01)
+topGO(go, ontology = "BP", number = 30L, truncate.term = NULL, sort = "Up")
+keg <- kegga(list(Up=up.genes.1vs3$entrezid, Down=down.genes.1vs3$entrezid), species="Hs", FDR=0.01)
+topKEGG(keg, number = 30L, truncate.path = NULL, sort="Down")
+```
+
+```{r}
+ego <- enrichGO(up.genes.1vs3$entrezid, OrgDb="org.Hs.eg.db", ont="BP", readable=TRUE, pvalueCutoff=0.01)
+dotplot(ego, showCategory=30)
+kk <- enrichKEGG(up.genes.1vs3$entrezid, organism = "hsa", pvalueCutoff=0.01)
+dotplot(kk, showCategory=30)
+```
+
+We can see similar results, up-regulated genes are associated with neural functions. Let's go for down-regulated genes.
+```{r}
+topGO(go, ontology = "BP", number = 30L, truncate.term = NULL, sort="Down")
+topKEGG(keg, number = 30L, truncate.path = NULL,sort="Down")
+```
+
+```{r}
+ego <- enrichGO(down.genes.1vs3$entrezid, OrgDb="org.Hs.eg.db", ont="BP", readable=TRUE, pvalueCutoff=0.01)
+dotplot(ego, showCategory=15)
+kk <- enrichKEGG(down.genes.1vs3$entrezid, organism = "hsa", pvalueCutoff=0.01)
+dotplot(kk, showCategory=30)
+```
+Reaching similar results of 1vs2. Down-regulated genes are associated with hepatic (instead of pancreatic) functions, such as metabolic ones, bile secretion, hormone biosynthesis and so on and so forth.
+
+Finally, group 2 (pancreas) compared to group 3 (liver).
+```{r}
+go <- goana(list(Up=up.genes.2vs3$entrezid, Down=down.genes.2vs3$entrezid), species="Hs", FDR=0.01)
+topGO(go, ontology = "BP", number = 30L, truncate.term = NULL, sort = "Up")
+keg <- kegga(list(Up=up.genes.2vs3$entrezid, Down=down.genes.2vs3$entrezid), species="Hs", FDR=0.01)
+topKEGG(keg, number = 30L, truncate.path = NULL, sort = "Up")
+```
+
+```{r}
+ego <- enrichGO(up.genes.2vs3$entrezid, OrgDb="org.Hs.eg.db", ont="BP", readable=TRUE, pvalueCutoff=0.01)
+dotplot(ego, showCategory=30)
+kk <- enrichKEGG(up.genes.2vs3$entrezid, organism = "hsa", pvalueCutoff=0.01)
+dotplot(kk, showCategory=30)
+```
+
+Googling information on those bunch of genes (https://www.ebi.ac.uk/QuickGO/) we see that most of these up-regulated genes (and their final products) are associated with metabolic processing taking place in both pancreatic and hepatic cells (we can see both "Pancreatic secretion" and "Gastric acid secretion" for example). 
+
+Let's see down-regulated genes.
+```{r}
+topGO(go, ontology = "BP", number = 30L, truncate.term = NULL, sort="Down")
+topKEGG(keg, number = 30L, truncate.path = NULL, sort="Down")
+```
+
+```{r}
+ego <- enrichGO(down.genes.2vs3$entrezid, OrgDb="org.Hs.eg.db", ont="BP", readable=TRUE, pvalueCutoff=0.01)
+dotplot(ego, showCategory=30)
+kk <- enrichKEGG(down.genes.2vs3$entrezid, organism = "hsa", pvalueCutoff=0.01)
+dotplot(kk, showCategory=30)
+```
+
+We obtained a similar list of down-regulated genes of 1vs3: down-regulated genes are associated with hepatic functions.
+
+The aim of the post-processing bulk RNA-Seq dataset given by this last analysis is achieved. We used two tools (and generated respective clusterProfiler dot plots) in order to determine whether the results "make sense"; the GO annotations & KEGG pathways are consistent with the fact that the genes are up-regulated or down-regulated in our three tissues. In other words, if the samples were "anonymous", we'd have been able to discover from which tissue each sample was taken from.
+
+# sessionInfo()
+
+This analysis was conducted on:
+```{r}
+sessionInfo()
+```
+
+# Bibliography
+
+Bioconductor; recount quick start guide & workflow; https://bioconductor.org/packages/release/bioc/vignettes/recount/inst/doc/recount-quickstart.html & https://bioconductor.org/packages/release/workflows/vignettes/recountWorkflow/inst/doc/recount-workflow.html
+
+Giulio Pavesi; DE gene analysis with edgeR (2021 Update); http://159.149.160.56/Transcriptomics/edgeR_exercise.html
+
+Bioconductor; Empirical Analysis of Digital Gene Expression Data in R; https://bioconductor.org/packages/release/bioc/html/edgeR.html
+
+Giulio Pavesi; Annotations Exercise; http://159.149.160.56/Transcriptomics/gata6.html
+
+Bioconductor; clusterProfiler; https://bioconductor.org/packages/release/bioc/html/clusterProfiler.html
+
+Mohammed Khalfan; Gene Set Enrichment Analysis with ClusterProfiler; https://learn.gencore.bio.nyu.edu/rna-seq-analysis/gene-set-enrichment-analysis/
